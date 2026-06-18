@@ -1,12 +1,11 @@
-name: CI/CD Tienda Perritos - Frontend
+name: CI/CD Tienda Perritos - Frontend (EKS)
 
 on:
   push:
     branches: [ "main" ]
-    # Se eliminó "paths:" porque todo el repo es solo frontend
 
 jobs:
-  build-push-deploy-frontend:
+  build-push-deploy-eks:
     runs-on: ubuntu-latest
 
     steps:
@@ -16,36 +15,27 @@ jobs:
     - name: Configurar credenciales AWS
       uses: aws-actions/configure-aws-credentials@v4
       with:
-        aws-access-key-id: ${{secrets.AWS_ACCESS_KEY_ID}}
-        aws-secret-access-key: ${{secrets.AWS_SECRET_ACCESS_KEY}}
-        aws-session-token: ${{secrets.AWS_SESSION_TOKEN}}
-        aws-region: ${{secrets.AWS_REGION}}
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+        aws-region: us-east-1
 
-    - name: Login en Amazon ECR (runner)
+    - name: Login en Amazon ECR
       uses: aws-actions/amazon-ecr-login@v2
 
     - name: Build imagen Frontend y push a ECR
       run: |
-        # Inyección de la IP en el archivo de la raíz
-        sed -i "s/BACKEND_IP_PLACEHOLDER/${{ secrets.BACKEND_PRIVATE_IP }}/g" default.conf
-        
-        # Construcción directa en la raíz (se eliminó el "cd frontend")
         docker build -t tienda-frontend .
-        docker tag tienda-frontend:latest ${{secrets.ECR_REPO_URL_FRONTEND}}:latest
-        docker push ${{secrets.ECR_REPO_URL_FRONTEND}}:latest
+        docker tag tienda-frontend:latest ${{ secrets.ECR_REGISTRY }}/tienda-frontend:latest
+        docker push ${{ secrets.ECR_REGISTRY }}/tienda-frontend:latest
 
-    - name: Desplegar Frontend vía SSM
+    - name: Configurar kubectl (Conectar a EKS)
       run: |
-        aws ssm send-command \
-          --instance-ids ${{secrets.EC2_FRONTEND_INSTANCE_ID}} \
-          --document-name "AWS-RunShellScript" \
-          --comment "Actualizar tienda-frontend desde ECR" \
-          --parameters '{"commands":[
-            "set -e",
-            "aws ecr get-login-password --region '${{secrets.AWS_REGION}}' | docker login --username AWS --password-stdin ${{secrets.ECR_REGISTRY}}",
-            "docker pull ${{secrets.ECR_REPO_URL_FRONTEND}}:latest",
-            "docker stop tienda-frontend || true",
-            "docker rm tienda-frontend || true",
-            "docker run -d --name tienda-frontend -p 80:80 ${{secrets.ECR_REPO_URL_FRONTEND}}:latest"
-          ]}' \
-          --output text
+        aws eks update-kubeconfig --region us-east-1 --name tienda-perritos-cluster-v2
+
+    - name: Inyectar Secrets y Desplegar en EKS
+      env:
+        ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+      run: |
+        envsubst < k8s-frontend.yaml > k8s-frontend-final.yaml
+        kubectl apply -f k8s-frontend-final.yaml
